@@ -1,0 +1,92 @@
+name: Build Android APK for Shri Ji Store
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Extract ZIP File
+        run: |
+          unzip -o *.zip
+
+      - name: Build APK (Original Native Method)
+        env:
+          EXPO_NO_TELEMETRY: 1
+          CI: true
+        run: |
+          # 1. Main root folder mein jayein (Jahan pnpm-workspace.yaml hai)
+          ROOT_DIR=$(find . -maxdepth 2 -type f -name "pnpm-workspace.yaml" -exec dirname {} \; | head -n 1)
+          cd "$ROOT_DIR"
+          
+          # 2. Saari libraries ko unke original tareeke se install karein (No Links Broken)
+          pnpm install --no-frozen-lockfile
+
+          # 3. Mobile app folder mein jayein
+          MOBILE_DIR=$(find . -type d -name "dukaan-mobile" | head -n 1)
+          cd "$MOBILE_DIR"
+
+          # 4. App ka naam Shri Ji Store set karein
+          node -e '
+            const fs = require("fs");
+            if (fs.existsSync("app.json")) {
+              const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+              if (!app.expo) app.expo = {};
+              app.expo.name = "Shri Ji Store";
+              app.expo.slug = "shri-ji-store";
+              if (!app.expo.android) app.expo.android = {};
+              app.expo.android.package = "com.shriji.store";
+              fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
+            }
+          '
+
+          # 5. IMPORTANT: API URL daalein taaki App open hote hi Database URL na milne par crash na ho
+          echo "EXPO_PUBLIC_API_URL=https://api.shrijistore.com" > .env
+
+          # 6. Expo Native code generate karein
+          npx expo prebuild --platform android --clean --no-install
+
+          # 7. Proguard compressions aur duplicate files band karein (Crash rukega)
+          echo "android { packagingOptions { pickFirst 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'; pickFirst 'lib/x86/libc++_shared.so'; pickFirst 'lib/x86_64/libc++_shared.so'; pickFirst 'lib/armeabi-v7a/libc++_shared.so'; pickFirst 'lib/arm64-v8a/libc++_shared.so' } }" >> android/app/build.gradle
+          echo "android { packaging { pickFirst 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'; pickFirst 'lib/x86/libc++_shared.so'; pickFirst 'lib/x86_64/libc++_shared.so'; pickFirst 'lib/armeabi-v7a/libc++_shared.so'; pickFirst 'lib/arm64-v8a/libc++_shared.so' } }" >> android/app/build.gradle
+          
+          sed -i 's/def enableProguardInReleaseBuilds = true/def enableProguardInReleaseBuilds = false/g' android/app/build.gradle
+          sed -i 's/enableProguardInReleaseBuilds = true/enableProguardInReleaseBuilds = false/g' android/app/build.gradle
+
+          # 8. APK Build karein
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+          # 9. APK ko bahar nikalein
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Shri-Ji-Store.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shri-Ji-Store-APK
+          path: Shri-Ji-Store.apk
