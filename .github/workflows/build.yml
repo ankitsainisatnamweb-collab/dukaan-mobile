@@ -47,16 +47,7 @@ jobs:
           fi
           cd /tmp/build-app
 
-          # 3. Babel Resolver Install Karein (Jo sab link karega)
-          npm install --save-dev babel-plugin-module-resolver
-
-          # 4. Babel Config set karein taaki App crash na ho (Direct Source Code Link)
-          echo "module.exports = function(api) { api.cache(true); return { presets: ['babel-preset-expo'], plugins: [['module-resolver', { alias: { '@workspace/db': './lib/db/src', '@workspace/api-client-react': './lib/api-client-react/src', '@workspace/api-zod': './lib/api-zod/src' } }], 'react-native-reanimated/plugin'] }; };" > babel.config.js
-
-          # 5. Missing Database API ko handle karein (Crash rukega)
-          echo "EXPO_PUBLIC_API_URL=https://api.shrijistore.com" > .env
-
-          # 6. Smart Dependency Merger
+          # 3. PEHLE PACKAGE.JSON CLEAN KAREIN (Taaki npm crash na ho)
           node -e '
             const fs = require("fs"); const path = require("path");
             const appPkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -71,8 +62,13 @@ jobs:
                   ["dependencies", "devDependencies"].forEach(dt => {
                     if (libPkg[dt]) {
                       for (let dep in libPkg[dt]) {
-                        if (!dep.startsWith("@workspace/") && !dep.includes("workspace:") && !dep.includes("catalog:")) {
-                          appPkg[dt][dep] = libPkg[dt][dep];
+                        if (!dep.startsWith("@workspace/")) {
+                           let val = libPkg[dt][dep];
+                           if(typeof val === "string" && (val.includes("catalog:") || val.includes("workspace:"))) {
+                             appPkg[dt][dep] = "*";
+                           } else {
+                             appPkg[dt][dep] = val;
+                           }
                         }
                       }
                     }
@@ -109,14 +105,21 @@ jobs:
             }
           '
 
-          # 7. Install packages (Clean Method)
+          # 4. Old lock files delete karein aur Packages Install karein
           rm -f package-lock.json pnpm-lock.yaml yarn.lock
           npm install --legacy-peer-deps --force
+          npm install --save-dev babel-plugin-module-resolver --legacy-peer-deps --force
 
-          # 8. Generate Android Native Project
+          # 5. Babel Config set karein (Direct Source Code Link, No Crashes)
+          echo "module.exports = function(api) { api.cache(true); return { presets: ['babel-preset-expo'], plugins: [['module-resolver', { alias: { '@workspace/db': './lib/db/src', '@workspace/api-client-react': './lib/api-client-react/src', '@workspace/api-zod': './lib/api-zod/src' } }], 'react-native-reanimated/plugin'] }; };" > babel.config.js
+
+          # 6. Missing Database API ko handle karein
+          echo "EXPO_PUBLIC_API_URL=https://api.shrijistore.com" > .env
+
+          # 7. Generate Android Native Project
           npx expo prebuild --platform android --clean --no-install
 
-          # 9. Gradle Fixes for Proguard and Duplicates
+          # 8. Gradle Fixes for Proguard and Duplicates (Taaki app turant open ho)
           echo "android { packagingOptions { pickFirst '**/*.MF'; pickFirst '**/*.so' } }" >> android/app/build.gradle
           echo "android { packaging { pickFirst '**/*.MF'; pickFirst '**/*.so' } }" >> android/app/build.gradle
           sed -i 's/def enableProguardInReleaseBuilds = true/def enableProguardInReleaseBuilds = false/g' android/app/build.gradle
@@ -124,12 +127,12 @@ jobs:
           sed -i 's/shrinkResources true/shrinkResources false/g' android/app/build.gradle
           sed -i 's/minifyEnabled enableProguardInReleaseBuilds/minifyEnabled false/g' android/app/build.gradle
 
-          # 10. Compile APK
+          # 9. Compile APK
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
-          # 11. Move APK to Workspace
+          # 10. Move APK to Workspace
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Shri-Ji-Store.apk"
 
       - name: Upload APK
