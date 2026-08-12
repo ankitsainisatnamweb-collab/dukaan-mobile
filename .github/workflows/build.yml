@@ -25,64 +25,111 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+      - name: Extract ZIP File Safely
+        run: unzip -q -o *.zip
 
-      - name: Extract ZIP File
-        run: |
-          unzip -o *.zip
-
-      - name: Build APK (Original Native Method)
+      - name: Master Build Process (Crash-Free)
         env:
           EXPO_NO_TELEMETRY: 1
           CI: true
         run: |
-          # 1. Main root folder mein jayein (Jahan pnpm-workspace.yaml hai)
-          ROOT_DIR=$(find . -maxdepth 2 -type f -name "pnpm-workspace.yaml" -exec dirname {} \; | head -n 1)
-          cd "$ROOT_DIR"
-          
-          # 2. Saari libraries ko unke original tareeke se install karein (No Links Broken)
-          pnpm install --no-frozen-lockfile
-
-          # 3. Mobile app folder mein jayein
+          # 1. Sahi Folders Dhoondhein
           MOBILE_DIR=$(find . -type d -name "dukaan-mobile" | head -n 1)
-          cd "$MOBILE_DIR"
+          LIB_DIR=$(find . -type d -name "lib" -not -path "*/node_modules/*" | head -n 1)
 
-          # 4. App ka naam Shri Ji Store set karein
+          if [ -z "$MOBILE_DIR" ]; then echo "App folder nahi mila!"; exit 1; fi
+
+          # 2. Ek Naya Clean Folder Banayein
+          mkdir -p /tmp/build-app
+          cp -a "$MOBILE_DIR/." /tmp/build-app/
+          if [ -n "$LIB_DIR" ] && [ -d "$LIB_DIR" ]; then
+            cp -a "$LIB_DIR" /tmp/build-app/lib
+          fi
+          cd /tmp/build-app
+
+          # 3. Babel Resolver Install Karein (Jo sab link karega)
+          npm install --save-dev babel-plugin-module-resolver
+
+          # 4. Babel Config set karein taaki App crash na ho (Direct Source Code Link)
+          echo "module.exports = function(api) { api.cache(true); return { presets: ['babel-preset-expo'], plugins: [['module-resolver', { alias: { '@workspace/db': './lib/db/src', '@workspace/api-client-react': './lib/api-client-react/src', '@workspace/api-zod': './lib/api-zod/src' } }], 'react-native-reanimated/plugin'] }; };" > babel.config.js
+
+          # 5. Missing Database API ko handle karein (Crash rukega)
+          echo "EXPO_PUBLIC_API_URL=https://api.shrijistore.com" > .env
+
+          # 6. Smart Dependency Merger
           node -e '
-            const fs = require("fs");
+            const fs = require("fs"); const path = require("path");
+            const appPkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (!appPkg.dependencies) appPkg.dependencies = {};
+            if (!appPkg.devDependencies) appPkg.devDependencies = {};
+            
+            if (fs.existsSync("./lib")) {
+              fs.readdirSync("./lib").forEach(libName => {
+                const libPkgPath = path.join("./lib", libName, "package.json");
+                if (fs.existsSync(libPkgPath)) {
+                  const libPkg = JSON.parse(fs.readFileSync(libPkgPath, "utf8"));
+                  ["dependencies", "devDependencies"].forEach(dt => {
+                    if (libPkg[dt]) {
+                      for (let dep in libPkg[dt]) {
+                        if (!dep.startsWith("@workspace/") && !dep.includes("workspace:") && !dep.includes("catalog:")) {
+                          appPkg[dt][dep] = libPkg[dt][dep];
+                        }
+                      }
+                    }
+                  });
+                }
+              });
+            }
+
+            delete appPkg.workspaces;
+            ["dependencies", "devDependencies", "peerDependencies"].forEach(dt => {
+              if (appPkg[dt]) {
+                for (let dep in appPkg[dt]) {
+                  if (dep.startsWith("@workspace/")) delete appPkg[dt][dep];
+                  else if (typeof appPkg[dt][dep] === "string" && (appPkg[dt][dep].includes("catalog:") || appPkg[dt][dep].includes("workspace:"))) appPkg[dt][dep] = "*";
+                }
+              }
+            });
+
+            if (!appPkg.expo) appPkg.expo = {};
+            appPkg.expo.name = "Shri Ji Store";
+            appPkg.expo.slug = "shri-ji-store";
+            if (!appPkg.expo.android) appPkg.expo.android = {};
+            appPkg.expo.android.package = "com.shriji.store";
+            fs.writeFileSync("package.json", JSON.stringify(appPkg, null, 2));
+
             if (fs.existsSync("app.json")) {
-              const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
-              if (!app.expo) app.expo = {};
-              app.expo.name = "Shri Ji Store";
-              app.expo.slug = "shri-ji-store";
-              if (!app.expo.android) app.expo.android = {};
-              app.expo.android.package = "com.shriji.store";
-              fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
+              const appJson = JSON.parse(fs.readFileSync("app.json", "utf8"));
+              if (!appJson.expo) appJson.expo = {};
+              appJson.expo.name = "Shri Ji Store";
+              appJson.expo.slug = "shri-ji-store";
+              if (!appJson.expo.android) appJson.expo.android = {};
+              appJson.expo.android.package = "com.shriji.store";
+              fs.writeFileSync("app.json", JSON.stringify(appJson, null, 2));
             }
           '
 
-          # 5. IMPORTANT: API URL daalein taaki App open hote hi Database URL na milne par crash na ho
-          echo "EXPO_PUBLIC_API_URL=https://api.shrijistore.com" > .env
+          # 7. Install packages (Clean Method)
+          rm -f package-lock.json pnpm-lock.yaml yarn.lock
+          npm install --legacy-peer-deps --force
 
-          # 6. Expo Native code generate karein
+          # 8. Generate Android Native Project
           npx expo prebuild --platform android --clean --no-install
 
-          # 7. Proguard compressions aur duplicate files band karein (Crash rukega)
-          echo "android { packagingOptions { pickFirst 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'; pickFirst 'lib/x86/libc++_shared.so'; pickFirst 'lib/x86_64/libc++_shared.so'; pickFirst 'lib/armeabi-v7a/libc++_shared.so'; pickFirst 'lib/arm64-v8a/libc++_shared.so' } }" >> android/app/build.gradle
-          echo "android { packaging { pickFirst 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'; pickFirst 'lib/x86/libc++_shared.so'; pickFirst 'lib/x86_64/libc++_shared.so'; pickFirst 'lib/armeabi-v7a/libc++_shared.so'; pickFirst 'lib/arm64-v8a/libc++_shared.so' } }" >> android/app/build.gradle
-          
+          # 9. Gradle Fixes for Proguard and Duplicates
+          echo "android { packagingOptions { pickFirst '**/*.MF'; pickFirst '**/*.so' } }" >> android/app/build.gradle
+          echo "android { packaging { pickFirst '**/*.MF'; pickFirst '**/*.so' } }" >> android/app/build.gradle
           sed -i 's/def enableProguardInReleaseBuilds = true/def enableProguardInReleaseBuilds = false/g' android/app/build.gradle
           sed -i 's/enableProguardInReleaseBuilds = true/enableProguardInReleaseBuilds = false/g' android/app/build.gradle
+          sed -i 's/shrinkResources true/shrinkResources false/g' android/app/build.gradle
+          sed -i 's/minifyEnabled enableProguardInReleaseBuilds/minifyEnabled false/g' android/app/build.gradle
 
-          # 8. APK Build karein
+          # 10. Compile APK
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
-          # 9. APK ko bahar nikalein
+          # 11. Move APK to Workspace
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Shri-Ji-Store.apk"
 
       - name: Upload APK
